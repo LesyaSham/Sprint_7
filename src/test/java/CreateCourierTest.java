@@ -1,6 +1,3 @@
-import io.qameta.allure.Step;
-import io.restassured.RestAssured;
-import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import models.Courier;
 import models.CourierCreds;
@@ -9,22 +6,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import steps.CourierSteps;
 
 import java.util.Random;
 
-import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
-public class CreateCourierTest {
+public class CreateCourierTest extends BaseTest {
 
     private Integer courierId;
     private String uniqueLogin;
+    private CourierSteps courierSteps;
 
     @BeforeEach
     public void setUp() {
-        RestAssured.baseURI = "https://qa-scooter.education-services.ru";
-
+        courierSteps = new CourierSteps();
         uniqueLogin = "user_" + new Random().nextInt(100000);
         courierId = null;
     }
@@ -32,22 +26,25 @@ public class CreateCourierTest {
     @AfterEach
     public void tearDown() {
         if (courierId != null) {
-            sendDeleteRequest(courierId);
+            courierSteps.deleteCourier(courierId);
         }
     }
 
     @Test
     @DisplayName("Курьера можно создавать + запрос возвращает правильный код ответа + успешный запрос возвращает ok: true")
     public void courierCanBeCreated() {
-
         Courier courier = new Courier(uniqueLogin, "pass1234", "Sanya");
 
-        Response response = sendPostRequestCreate(courier);
+        Response response = courierSteps.createCourier(courier);
 
-        checkStatusCode(response, 201);
-        checkResponseBodyOkField(response, true);
+        courierSteps.checkStatusCode(response, 201);
+        courierSteps.checkResponseBodyOkField(response, true);
 
-        saveCourierIdForTearDown(uniqueLogin, "pass1234");
+        CourierCreds creds = new CourierCreds(uniqueLogin, "pass1234");
+        Response loginResponse = courierSteps.loginCourier(creds);
+        if (loginResponse.statusCode() == 200) {
+            courierId = loginResponse.body().as(CourierLoginResponse.class).getId();
+        }
     }
 
     @Test
@@ -55,15 +52,19 @@ public class CreateCourierTest {
     public void cannotCreateTwoIdenticalCouriers() {
         Courier courier = new Courier(uniqueLogin, "pass1234", "Sanya");
 
-        Response firstResponse = sendPostRequestCreate(courier);
-        checkStatusCode(firstResponse, 201);
+        Response firstResponse = courierSteps.createCourier(courier);
+        courierSteps.checkStatusCode(firstResponse, 201);
 
-        saveCourierIdForTearDown(uniqueLogin, "pass1234");
+        CourierCreds creds = new CourierCreds(uniqueLogin, "pass1234");
+        Response loginResponse = courierSteps.loginCourier(creds);
+        if (loginResponse.statusCode() == 200) {
+            courierId = loginResponse.body().as(CourierLoginResponse.class).getId();
+        }
 
-        Response secondResponse = sendPostRequestCreate(courier);
+        Response secondResponse = courierSteps.createCourier(courier);
 
-        checkStatusCode(secondResponse, 409);
-        checkResponseBodyMessageField(secondResponse, "Этот логин уже используется. Попробуйте другой.");
+        courierSteps.checkStatusCode(secondResponse, 409);
+        courierSteps.checkResponseBodyMessageField(secondResponse, "Этот логин уже используется. Попробуйте другой.");
     }
 
     @Test
@@ -71,10 +72,10 @@ public class CreateCourierTest {
     public void cannotCreateCourierWithoutLogin() {
         Courier courierWithoutLogin = new Courier("", "pass1234", "Sanya");
 
-        Response response = sendPostRequestCreate(courierWithoutLogin);
+        Response response = courierSteps.createCourier(courierWithoutLogin);
 
-        checkStatusCode(response, 400);
-        checkResponseBodyMessageField(response, "Недостаточно данных для создания учетной записи");
+        courierSteps.checkStatusCode(response, 400);
+        courierSteps.checkResponseBodyMessageField(response, "Недостаточно данных для создания учетной записи");
     }
 
     @Test
@@ -82,58 +83,9 @@ public class CreateCourierTest {
     public void cannotCreateCourierWithoutPassword() {
         Courier courierWithoutPassword = new Courier(uniqueLogin, "", "Sanya");
 
-        Response response = sendPostRequestCreate(courierWithoutPassword);
+        Response response = courierSteps.createCourier(courierWithoutPassword);
 
-        checkStatusCode(response, 400);
-        checkResponseBodyMessageField(response, "Недостаточно данных для создания учетной записи");
-    }
-
-    // =========================================================================
-    // ШАГИ С АННОТАЦИЕЙ @Step
-    // =========================================================================
-
-    @Step("Отправить POST-запрос на создание курьера")
-    public Response sendPostRequestCreate(Courier courier) {
-        return given()
-                .contentType(ContentType.JSON)
-                .body(courier)
-                .when()
-                .post("/api/v1/courier");
-    }
-
-    @Step("Проверить статус-код ответа: ожидается {expectedCode}")
-    public void checkStatusCode(Response response, int expectedCode) {
-        assertEquals(expectedCode, response.statusCode());
-    }
-
-    @Step("Проверить, что поле 'ok' в ответе равно {expectedValue}")
-    public void checkResponseBodyOkField(Response response, boolean expectedValue) {
-        response.then().assertThat().body("ok", equalTo(expectedValue));
-    }
-
-    @Step("Проверить сообщение об ошибке: ожидается '{expectedMessage}'")
-    public void checkResponseBodyMessageField(Response response, String expectedMessage) {
-        response.then().assertThat().body("message", equalTo(expectedMessage));
-    }
-
-    //Десериализация (для удаления данных после теста)
-    private void saveCourierIdForTearDown(String login, String password) {
-        CourierCreds creds = new CourierCreds(login, password);
-
-        Response loginResponse = given()
-                .contentType(ContentType.JSON)
-                .body(creds)
-                .post("/api/v1/courier/login");
-
-        if (loginResponse.statusCode() == 200) {
-            CourierLoginResponse responseBody = loginResponse.body().as(CourierLoginResponse.class);
-            courierId = responseBody.getId();
-        }
-    }
-
-    private void sendDeleteRequest(int id) {
-        given()
-                .when()
-                .delete("/api/v1/courier/" + id);
+        courierSteps.checkStatusCode(response, 400);
+        courierSteps.checkResponseBodyMessageField(response, "Недостаточно данных для создания учетной записи");
     }
 }
